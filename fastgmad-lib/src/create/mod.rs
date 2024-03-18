@@ -6,11 +6,12 @@ use crate::{
 use std::{
 	fs::File,
 	io::{Read, SeekFrom},
-	io::{self, Seek, Write},
+	io::{BufRead, BufReader, Seek, Write},
 	path::{Path, PathBuf},
 	sync::Arc,
 	sync::{atomic::AtomicUsize, Condvar, Mutex},
 	time::SystemTime,
+	env,
 };
 
 mod conf;
@@ -23,7 +24,7 @@ pub use conf::CreateGmadOut;
 ///
 /// Prefer [`seekable_create_gma`] if your writer type implements [`std::io::Seek`], as it supports parallel I/O.
 pub fn create_gma(conf: &CreateGmaConfig, w: &mut impl Write) -> Result<(), FastGmadError> {
-	let include_lua_files = prompt_for_lua_inclusion();
+	let include_lua_files = check_for_lua_inclusion();
 	StandardCreateGma::create_gma_with_done_callback(conf, w, &mut || (), include_lua_files)
 }
 
@@ -32,17 +33,17 @@ pub fn create_gma(conf: &CreateGmaConfig, w: &mut impl Write) -> Result<(), Fast
 /// Prefer this function over [`create_gma`] if your writer type implements [`std::io::Seek`], as this function supports parallel I/O.
 pub fn seekable_create_gma(conf: &CreateGmaConfig, w: &mut (impl Write + Seek)) -> Result<(), FastGmadError> {
 	if conf.max_io_threads.get() == 1 {
-		let include_lua_files = prompt_for_lua_inclusion();
+		let include_lua_files = check_for_lua_inclusion();
 		StandardCreateGma::create_gma_with_done_callback(conf, w, &mut || (), include_lua_files)
 	} else {
-		let include_lua_files = prompt_for_lua_inclusion();
+		let include_lua_files = check_for_lua_inclusion();
 		ParallelCreateGma::create_gma_with_done_callback(conf, w, &mut || (), include_lua_files)
 	}
 }
 
 #[cfg(feature = "binary")]
 pub fn create_gma_with_done_callback(conf: &CreateGmaConfig, w: &mut impl Write, done_callback: &mut dyn FnMut()) -> Result<(), FastGmadError> {
-	let include_lua_files = prompt_for_lua_inclusion();
+	let include_lua_files = check_for_lua_inclusion();
 	StandardCreateGma::create_gma_with_done_callback(conf, w, done_callback, include_lua_files)
 }
 
@@ -53,20 +54,42 @@ pub fn seekable_create_gma_with_done_callback(
 	done_callback: &mut dyn FnMut(),
 ) -> Result<(), FastGmadError> {
 	if conf.max_io_threads.get() == 1 {
-		let include_lua_files = prompt_for_lua_inclusion();
+		let include_lua_files = check_for_lua_inclusion();
 		StandardCreateGma::create_gma_with_done_callback(conf, w, done_callback, include_lua_files)
 	} else {
-		let include_lua_files = prompt_for_lua_inclusion();
+		let include_lua_files = check_for_lua_inclusion();
 		ParallelCreateGma::create_gma_with_done_callback(conf, w, done_callback, include_lua_files)
 	}
 }
 
-fn prompt_for_lua_inclusion() -> bool {
-	let mut input = String::new();
-	println!("Do you want to include Lua files in the GMA package? [y/n]: ");
-	io::stdout().flush().unwrap();
-	io::stdin().read_line(&mut input).unwrap();
-	matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+fn check_for_lua_inclusion() -> bool {
+  let mut cfg_path = match env::current_exe() {
+		Ok(exe_path) => {
+			 exe_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
+		},
+		Err(_) => PathBuf::from("."),
+  };
+  cfg_path.push("FixWorkshop.cfg");
+
+  let file = match File::open(cfg_path) {
+		Ok(file) => file,
+		Err(_) => return false,
+  };
+
+  let reader = BufReader::new(file);
+
+  for line in reader.lines() {
+		match line {
+			 Ok(line) => {
+				  if line.trim() == "include_lua=true" {
+						return true;
+				  }
+			 },
+			 Err(_) => continue,
+		}
+  }
+
+  false
 }
 
 trait CreateGma<W: Write> {
