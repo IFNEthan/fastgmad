@@ -6,7 +6,7 @@ use crate::{
 use std::{
 	fs::File,
 	io::{Read, SeekFrom},
-	io::{Seek, Write},
+	io::{self, Seek, Write},
 	path::{Path, PathBuf},
 	sync::Arc,
 	sync::{atomic::AtomicUsize, Condvar, Mutex},
@@ -23,7 +23,8 @@ pub use conf::CreateGmadOut;
 ///
 /// Prefer [`seekable_create_gma`] if your writer type implements [`std::io::Seek`], as it supports parallel I/O.
 pub fn create_gma(conf: &CreateGmaConfig, w: &mut impl Write) -> Result<(), FastGmadError> {
-	StandardCreateGma::create_gma_with_done_callback(conf, w, &mut || ())
+	let include_lua_files = prompt_for_lua_inclusion();
+	StandardCreateGma::create_gma_with_done_callback(conf, w, &mut || (), include_lua_files)
 }
 
 /// Creates a GMA file from a directory.
@@ -31,15 +32,18 @@ pub fn create_gma(conf: &CreateGmaConfig, w: &mut impl Write) -> Result<(), Fast
 /// Prefer this function over [`create_gma`] if your writer type implements [`std::io::Seek`], as this function supports parallel I/O.
 pub fn seekable_create_gma(conf: &CreateGmaConfig, w: &mut (impl Write + Seek)) -> Result<(), FastGmadError> {
 	if conf.max_io_threads.get() == 1 {
-		StandardCreateGma::create_gma_with_done_callback(conf, w, &mut || ())
+		let include_lua_files = prompt_for_lua_inclusion();
+		StandardCreateGma::create_gma_with_done_callback(conf, w, &mut || (), include_lua_files)
 	} else {
-		ParallelCreateGma::create_gma_with_done_callback(conf, w, &mut || ())
+		let include_lua_files = prompt_for_lua_inclusion();
+		ParallelCreateGma::create_gma_with_done_callback(conf, w, &mut || (), include_lua_files)
 	}
 }
 
 #[cfg(feature = "binary")]
 pub fn create_gma_with_done_callback(conf: &CreateGmaConfig, w: &mut impl Write, done_callback: &mut dyn FnMut()) -> Result<(), FastGmadError> {
-	StandardCreateGma::create_gma_with_done_callback(conf, w, done_callback)
+	let include_lua_files = prompt_for_lua_inclusion();
+	StandardCreateGma::create_gma_with_done_callback(conf, w, done_callback, include_lua_files)
 }
 
 #[cfg(feature = "binary")]
@@ -49,19 +53,29 @@ pub fn seekable_create_gma_with_done_callback(
 	done_callback: &mut dyn FnMut(),
 ) -> Result<(), FastGmadError> {
 	if conf.max_io_threads.get() == 1 {
-		StandardCreateGma::create_gma_with_done_callback(conf, w, done_callback)
+		let include_lua_files = prompt_for_lua_inclusion();
+		StandardCreateGma::create_gma_with_done_callback(conf, w, done_callback, include_lua_files)
 	} else {
-		ParallelCreateGma::create_gma_with_done_callback(conf, w, done_callback)
+		let include_lua_files = prompt_for_lua_inclusion();
+		ParallelCreateGma::create_gma_with_done_callback(conf, w, done_callback, include_lua_files)
 	}
 }
 
+fn prompt_for_lua_inclusion() -> bool {
+	let mut input = String::new();
+	println!("Do you want to include Lua files in the GMA package? [y/n]: ");
+	io::stdout().flush().unwrap();
+	io::stdin().read_line(&mut input).unwrap();
+	matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
 trait CreateGma<W: Write> {
-	fn create_gma_with_done_callback(conf: &CreateGmaConfig, w: &mut W, done_callback: &mut dyn FnMut()) -> Result<(), FastGmadError> {
+	fn create_gma_with_done_callback(conf: &CreateGmaConfig, w: &mut W, done_callback: &mut dyn FnMut(), include_lua_files: bool) -> Result<(), FastGmadError> {
 		log::info!("Reading addon.json...");
 		let addon_json = AddonJson::read(&conf.folder.join("addon.json"))?;
 
 		log::info!("Discovering entries...");
-		let entries = discover_entries(&conf.folder, &addon_json.ignore, conf.warn_invalid)?;
+		let entries = discover_entries(&conf.folder, &addon_json.ignore, conf.warn_invalid, include_lua_files)?;
 
 		log::info!("Writing GMA metadata...");
 
@@ -170,7 +184,7 @@ trait CreateGma<W: Write> {
 	) -> Result<(), FastGmadError>;
 }
 
-fn discover_entries(folder: &Path, ignore: &[String], warn_invalid: bool) -> Result<Vec<GmaFileEntry>, FastGmadError> {
+fn discover_entries(folder: &Path, ignore: &[String], warn_invalid: bool, include_lua_files: bool) -> Result<Vec<GmaFileEntry>, FastGmadError> {
 	let mut entries = Vec::new();
 	let mut prev_offset = 0;
 	for entry in walkdir::WalkDir::new(folder).follow_links(true).sort_by_file_name() {
@@ -204,6 +218,10 @@ fn discover_entries(folder: &Path, ignore: &[String], warn_invalid: bool) -> Res
 		}
 
 		if whitelist::is_ignored(&relative_path, ignore) {
+			continue;
+		}
+
+		if !include_lua_files && relative_path.ends_with(".lua") {
 			continue;
 		}
 
