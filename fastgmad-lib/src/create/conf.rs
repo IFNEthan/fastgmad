@@ -91,7 +91,7 @@ impl Default for CreateGmaConfig {
 	fn default() -> Self {
 		Self {
 			folder: PathBuf::new(),
-			warn_invalid: false,
+			warn_invalid: true,
 			max_io_threads: std::thread::available_parallelism().unwrap_or_else(|_| nonzero!(NonZeroUsize::new(1))),
 			max_io_memory_usage: nonzero!(NonZeroUsize::new(2147483648)), // 2 GiB
 
